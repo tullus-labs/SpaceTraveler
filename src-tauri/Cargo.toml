@@ -11,6 +11,9 @@ rust-version = "1.60"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = ["src/starship_plugin_api"]
+
 [build-dependencies]
 tauri-build = { version = "1.5.2", features = [] }
 
@@ -26,6 +29,12 @@ send_wrapper = "0.6.0"
 ctrlc-async = { version = "3.2.2", features = ["termination"] }
 atomic_refcell = "0.1.13"
 sysinfo = "0.30.13"
+whoami = "1.5.1"
+walkdir = "2.5.0"
+chrono = "0.4.38"
+toml = { version = "0.8.15", features = ["parse", "default"] }
+futures = "0.3.30"
+starship_plugin_api = {path = "src/starship_plugin_api" }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.
