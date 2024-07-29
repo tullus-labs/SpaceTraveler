@@ -1,54 +1,69 @@
-use std::any::Any;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
-use atomic_refcell::AtomicRefCell;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use tokio::task::JoinHandle;
 
-//Struct for manage Arcs and tokio tasks
+use std::env::current_exe;
+use std::fmt::{Display, Formatter};
+use std::fs::{create_dir, File};
+use std::io::Write;
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use tokio::io;
+use tracing::info;
+
+//Struct for run task observer
 pub struct Tasker {
-    tasks: FuturesUnordered<JoinHandle<TaskerResult<()>>>,
-    arcs: HashMap<String, Arc<AtomicRefCell<dyn Any + Send + Sync>>>
+    exe_path: PathBuf,
+    process: Option<Child>
 }
 
 impl Tasker {
     pub fn init() -> Self {
-        Self {
-            tasks: FuturesUnordered::new(),
-            arcs: HashMap::new()
-        }
-    }
+        let exe_path = current_exe().unwrap().parent().unwrap().join("services").join("tasker").join("task_observer.exe");
 
-    pub async fn add_task(&mut self, task: JoinHandle<TaskerResult<()>>) {
-        self.tasks.push(task);
-    }
-
-    pub async fn add_arc(&mut self, name: &str, arc: Arc<AtomicRefCell<dyn Any + Send + Sync>>) {
-        self.arcs.insert(name.to_string(), arc);
-    }
-
-    pub fn get_arc(&self, name: &str) -> Arc<AtomicRefCell<dyn Any + Send + Sync>> {
-        self.arcs.get(name).unwrap().clone()
-    }
-
-    pub async fn run_tasks(&mut self) -> TaskerResult<()> {
-        while let Some(result) = self.tasks.next().await {
-            return match result {
-                Ok(_) => TaskerResult::Ok(()),
-                Err(e) => TaskerResult::Err(TaskerError::ERROR(e.to_string()))
+        {
+            if !exe_path.exists() {
+                if !exe_path.parent().unwrap().exists() {
+                    create_dir(exe_path.parent().unwrap().parent().unwrap()).expect("Failed to create dir");
+                    create_dir(exe_path.parent().unwrap()).expect("Failed to create dir");
+                }
+                let mut file = File::create(&exe_path).unwrap();
+                file.write_all(include_bytes!("../../assets/task_observer.exe"))
+                    .unwrap();
             }
         }
-        return TaskerResult::Ok(())
+
+        Self {
+            exe_path,
+            process: None,
+        }
+    }
+
+    async fn run(&self) -> io::Result<Child> {
+        //const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        Command::new(self.exe_path.clone())
+            .spawn()
+    }
+
+    pub async fn safe_run(&mut self) -> Result<(), TaskerError> {
+        return match self.run().await {
+            Ok(ch) => {
+                self.process = Some(ch);
+                Ok(())
+            }
+            Err(e) => Err(TaskerError::Error(e.to_string()))
+        }
     }
 }
 
-pub enum TaskerResult <T> {
-    Ok(T),
-    Err(TaskerError)
-}
 
 pub enum TaskerError {
-    ERROR(String)
+    Error(String)
+}
+
+impl Display for TaskerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskerError::Error(e) => write!(f, "{}", e)
+        }
+    }
 }

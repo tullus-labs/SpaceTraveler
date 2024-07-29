@@ -1,3 +1,3 @@
 pub mod api;
-mod plugin_config;
+pub mod plugin_config;
 
