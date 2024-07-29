@@ -3,16 +3,20 @@ use std::fs::{File, Permissions};
 use std::io::Write;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::UNIX_EPOCH;
 use chrono::{DateTime, Local};
+use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use meilisearch_sdk::client::Client;
 use passwords::PasswordGenerator;
 use serde::{Deserialize, Serialize};
 use tokio::io;
 use tokio::io::Error;
+use tokio_stream::wrappers::ReadDirStream;
 use walkdir::WalkDir;
+use tracing::info;
 
 //Structure for send data about files to local meilisearch server
 #[derive(Serialize, Deserialize)]
@@ -79,20 +83,20 @@ impl MeilisearchRunner {
     }
 
     async fn run(&self) -> io::Result<Child> {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        Command::new(self.exe_path.clone().unwrap())
-            .arg(format!("--master-key={}", self.master_key))
-            .arg(format!(
-                "--db-path={}",
-                self.data_dir.clone().join("data.ms").display()
-            ))
-            .arg(format!(
-                "--dump-dir={}",
-                self.data_dir.clone().join("dump/").display()
-            ))
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            return Command::new(self.exe_path.clone().unwrap())
+                .arg(format!("--master-key={}", self.master_key.0))
+                .arg(format!(
+                    "--db-path={}",
+                    self.data_dir.clone().join("data.ms").display()
+                ))
+                .arg(format!(
+                    "--dump-dir={}",
+                    self.data_dir.clone().join("dump/").display()
+                ))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
     }
 
     pub async fn safe_run(&mut self) -> Result<(), MeilisearchRunnerError> {
@@ -114,19 +118,23 @@ impl MeilisearchRunner {
     pub async fn run_client(&mut self) {
         self.client = Some(
             Client::new(
-                format!("{}:{}", &self.host.0, &self.host.1),
+                format!("http://{}:{}", &self.host.0, &self.host.1),
                 Some(&self.master_key.0),
             )
                 .unwrap(),
         );
-        println!("Client run");
+        info!("Client run");
     }
 
     //Update information about file system in meilisearch
     pub async fn update_fs_info(&self) {
+        info!("updating info");
         if let Some(client) = self.client.clone() {
+            if let Err(_) = client.get_index("files").await {
+                client.create_index("files", None).await.unwrap();
+            }
             let files = client.index("files");
-            let data = files.search().with_sort(&["id"]).execute::<DataFile>().await.unwrap();
+            let data = files.search().execute::<DataFile>().await.expect("Failed to execute search");
             let mut id = 0;
             if !data.hits.is_empty() {
                 id = data.hits.into_iter().last().unwrap().result.id + 1
@@ -137,12 +145,25 @@ impl MeilisearchRunner {
     }
 
     async fn walkdir(&self, id: i32, path: &str) -> Vec<DataFile> {
+
         let mut id = id;
         let walkdir = WalkDir::new(path);
         let mut data_arr = vec![];
+
+        let total_entries = WalkDir::new(path).into_iter().count();
+        let pb = ProgressBar::new(total_entries as u64);
+
+        info!("walking");
+
         for entry in walkdir.into_iter().filter_map(|e| e.ok()) {
             let path = entry.clone().into_path();
-            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+
+            let name = if let Some(path) = path.file_name() {
+                path.to_str().unwrap().to_string()
+            }
+            else {
+                "".to_string()
+            };
             let metadata = if let Ok(metadata) = entry.metadata() {
                 let file_type = if metadata.is_dir() {
                     "directory"
@@ -186,10 +207,13 @@ impl MeilisearchRunner {
                 metadata
             };
             id += 1;
-            data_arr.push(data_file)
+            data_arr.push(data_file);
+            pb.inc(1);
         }
+        pb.finish();
         data_arr
     }
+
 }
 
 pub enum MeilisearchRunnerError {
@@ -209,7 +233,7 @@ pub struct MeilisearchHost(String, u16);
 
 impl Default for MeilisearchHost {
     fn default() -> Self {
-        MeilisearchHost("127.0.0.1".to_string(), 7700)
+        MeilisearchHost("localhost".to_string(), 7700)
     }
 }
 
